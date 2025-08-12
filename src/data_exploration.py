@@ -22,44 +22,73 @@ columns_to_plot = df.drop(columns=['filename_index']).columns
 #     plt.show()
 # pass
 
-# Plot correlations
-target_col = 'taxonID_index'
+# Drop index
 df = df.drop(columns=['filename_index'])
 
-# Make a copy
-df_encoded = df.copy()
 
-# Encode all columns (since they're categorical)
-for col in df_encoded.columns:
-    df_encoded[col] = df_encoded[col].astype('category').cat.codes
+# --------------------------------------------------
+## Weighted correlations
+# Plot correlations
+# target_col = 'taxonID_index'
+#
+# # Make a copy
+# df_encoded = df.copy()
+#
+# # Encode all columns (since they're categorical)
+# for col in df_encoded.columns:
+#     df_encoded[col] = df_encoded[col].astype('category').cat.codes
+#
+# # Compute weights based on class frequencies of the target
+# class_counts = df_encoded[target_col].value_counts()
+# weights = df_encoded[target_col].map(class_counts).astype(float)
+#
+# def weighted_corr(x, y, w):
+#     """Weighted Pearson correlation for categorical codes."""
+#     w_mean_x = np.average(x, weights=w)
+#     w_mean_y = np.average(y, weights=w)
+#     cov_xy = np.average((x - w_mean_x) * (y - w_mean_y), weights=w)
+#     std_x = np.sqrt(np.average((x - w_mean_x)**2, weights=w))
+#     std_y = np.sqrt(np.average((y - w_mean_y)**2, weights=w))
+#     return cov_xy / (std_x * std_y)
+#
+# # Calculate weighted correlations for all other columns
+# weighted_corrs = {}
+# for col in df_encoded.columns:
+#     if col != target_col:
+#         weighted_corrs[col] = weighted_corr(df_encoded[col], df_encoded[target_col], weights)
+#
+# # Convert to Series for easy viewing
+# weighted_corrs = pd.Series(weighted_corrs).sort_values(key=abs, ascending=False)
+#
+# # Weighted mean correlation (absolute values)
+# weighted_mean_corr = weighted_corrs.abs().mean()
+#
+# print("Weighted correlations with target:")
+# print(weighted_corrs)
+# print(f"\nWeighted mean correlation: {weighted_mean_corr:.4f}")
 
-# Compute weights based on class frequencies of the target
-class_counts = df_encoded[target_col].value_counts()
-weights = df_encoded[target_col].map(class_counts).astype(float)
+# --------------------------------------------------
+## Stacked bar chart
 
-def weighted_corr(x, y, w):
-    """Weighted Pearson correlation for categorical codes."""
-    w_mean_x = np.average(x, weights=w)
-    w_mean_y = np.average(y, weights=w)
-    cov_xy = np.average((x - w_mean_x) * (y - w_mean_y), weights=w)
-    std_x = np.sqrt(np.average((x - w_mean_x)**2, weights=w))
-    std_y = np.sqrt(np.average((y - w_mean_y)**2, weights=w))
-    return cov_xy / (std_x * std_y)
+target_col = 'taxonID_index'
+selected_cols = ['Habitat', 'Substrate']
 
-# Calculate weighted correlations for all other columns
-weighted_corrs = {}
-for col in df_encoded.columns:
-    if col != target_col:
-        weighted_corrs[col] = weighted_corr(df_encoded[col], df_encoded[target_col], weights)
+# Loop over every column except the target
+for col in selected_cols:
+    if col == target_col:
+        continue
 
-# Convert to Series for easy viewing
-weighted_corrs = pd.Series(weighted_corrs).sort_values(key=abs, ascending=False)
+    # Cross-tabulate counts
+    counts = pd.crosstab(df[col], df[target_col])
+    counts.index = counts.index.str[:10]
 
-# Weighted mean correlation (absolute values)
-weighted_mean_corr = weighted_corrs.abs().mean()
-
-print("Weighted correlations with target:")
-print(weighted_corrs)
-print(f"\nWeighted mean correlation: {weighted_mean_corr:.4f}")
+    # Plot stacked bar chart
+    counts.plot(kind='bar', stacked=True, figsize=(8, 5), logy=True, legend=False)
+    plt.title(f'{col} distribution by {target_col}')
+    plt.xlabel(col)
+    plt.ylabel('Count')
+    # plt.legend(title=target_col)
+    plt.tight_layout()
+    plt.show()
 
 pass
