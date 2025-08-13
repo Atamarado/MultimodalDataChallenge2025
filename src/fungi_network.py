@@ -121,7 +121,8 @@ def train_fungi_network(data_file, image_path, checkpoint_dir):
     # Load metadata
     df = pd.read_csv(data_file)
     train_df = df[df['filename_index'].str.startswith('fungi_train')]
-    train_df, val_df = train_test_split(train_df, test_size=0.2, random_state=42)
+    
+    train_df, val_df = train_test_split(train_df, test_size=0.2, random_state=42, stratify=train_df['taxonID_index'], shuffle=True)
     print('Training size', len(train_df))
     print('Validation size', len(val_df))
 
@@ -275,16 +276,16 @@ def evaluate_network_on_test_set(data_file, image_path, checkpoint_dir, session_
 
 if __name__ == "__main__":
     # Path to fungi images
-    image_path = '/novo/projects/shared_projects/eye_imaging/data/FungiImages/'
+    image_path = r"C:\Users\MartaMielczak\Desktop\Summer_School\FungiImages\FungiImages"
     # Path to metadata file
-    data_file = str('/novo/projects/shared_projects/eye_imaging/data/FungiImages/metadata.csv')
+    data_file = str(r"C:\Users\MartaMielczak\Desktop\Summer_School\metadata.csv")
 
     # Session name: Change session name for every experiment! 
     # Session name will be saved as the first line of the prediction file
-    session = "EfficientNet"
+    session = "Experiment0"
 
     # Folder for results of this experiment based on session name:
-    checkpoint_dir = os.path.join(f"/novo/projects/shared_projects/eye_imaging/code/FungiChallenge/results/{session}/")
+    checkpoint_dir = os.path.join(f"C:/Users/MartaMielczak/Desktop/Summer_School{session}/")
 
     train_fungi_network(data_file, image_path, checkpoint_dir)
     evaluate_network_on_test_set(data_file, image_path, checkpoint_dir, session)
