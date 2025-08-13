@@ -13,12 +13,14 @@ from sklearn.metrics import classification_report, confusion_matrix, accuracy_sc
 from torchvision import models
 from sklearn.model_selection import train_test_split
 from logging import getLogger, DEBUG, FileHandler, Formatter, StreamHandler
-import tqdm
+from tqdm import tqdm
 import numpy as np
 from PIL import Image
 import time
 import csv
 from collections import Counter
+
+from utils import get_subset
 
 def ensure_folder(folder):
     """
@@ -76,16 +78,84 @@ def get_transforms(data):
     else:
         raise ValueError("Unknown data mode requested (only 'train' or 'valid' allowed).")
 
+OUT_DIR = 'processed_metadata'
+
+def preprocess_metadata():
+    os.makedirs(OUT_DIR, exist_ok=True)
+
+    df = pd.read_csv('data/metadata.csv')
+    train_df = get_subset(df, 'train')
+
+    one_hot_columns = ['Habitat', 'Substrate']
+    for col in one_hot_columns:
+        col_data = df[col].astype('category').cat.codes
+        col_data = torch.tensor(col_data.values).long()
+
+        col_data[col_data == -1] = col_data.max() + 1 # Handle missing values
+
+        col_data = torch.nn.functional.one_hot(col_data, num_classes=len(df[col].unique()))
+        col_data = col_data.float()[:, :-1]
+
+        torch.save(col_data, os.path.join(OUT_DIR, f'{col}.pt'))
+
+    geo_columns = ['Latitude', 'Longitude']
+    geo_data = []
+    for col in geo_columns:
+        min_col = train_df[col].min()
+        max_col = train_df[col].max()
+
+        col_data = df[col]
+
+        col_data = (((col_data - min_col) / (max_col - min_col)) - 0.5) * 2
+        col_data = col_data.fillna(0.)
+        col_data = torch.tensor(col_data.values, dtype=torch.float)
+        geo_data.append(col_data)
+
+    geo_data = torch.stack(geo_data, dim=1)
+    torch.save(geo_data, os.path.join(OUT_DIR, 'geo.pt'))
+
+    event_date = pd.to_datetime(df['eventDate'])
+
+    month_sin = torch.tensor(np.sin(2 * np.pi * event_date.dt.month / 12).fillna(0.)).float()
+    month_cos = torch.tensor(np.cos(2 * np.pi * event_date.dt.month / 12).fillna(0.)).float()
+    day_of_year_sin = torch.tensor(np.sin(2 * np.pi * event_date.dt.dayofyear / 365.25).fillna(0.)).float()
+    day_of_year_cos = torch.tensor(np.cos(2 * np.pi * event_date.dt.dayofyear / 365.25).fillna(0.)).float()
+    week_sin = torch.tensor(np.sin(2 * np.pi * event_date.dt.isocalendar()['week'] / 52).fillna(0.)).float()
+    week_cos = torch.tensor(np.cos(2 * np.pi * event_date.dt.isocalendar()['week'] / 52).fillna(0.)).float()
+
+    max_year = 2020
+    min_year = 1985
+    year = torch.tensor(2 * (event_date.dt.year - min_year) / (max_year - min_year) - 1).float()
+    year = torch.nan_to_num(year, 0.)
+
+    time_data = torch.stack([month_sin, month_cos, day_of_year_sin, day_of_year_cos, week_sin, week_cos, year], dim=1)
+    torch.save(time_data, os.path.join(OUT_DIR, 'eventDate.pt'))
+
+def load_metadata():
+    cols = ['Habitat', 'Substrate', 'geo', 'eventDate']
+
+    data = []
+    for col in cols:
+        if not os.path.exists(os.path.join(OUT_DIR, f'{col}.pt')):
+            preprocess_metadata()
+        data.append(torch.load(os.path.join(OUT_DIR, f'{col}.pt')))
+
+    return data
+
 class FungiDataset(Dataset):
     def __init__(self, df, path, transform=None):
         self.df = df
         self.transform = transform
         self.path = path
 
+        self.habitat, self.substrate, self.geo, self.eventDate = load_metadata()
+
     def __len__(self):
         return len(self.df)
 
     def __getitem__(self, idx):
+        # ----------------------------------------
+        # Get image part
         file_path = self.df['filename_index'].values[idx]
         # Get label if it exists; otherwise return None
         label = self.df['taxonID_index'].values[idx]  # Get label
@@ -104,8 +174,61 @@ class FungiDataset(Dataset):
             augmented = self.transform(image=image)
             image = augmented['image']
 
-        return image, label, file_path
+        # ----------------------------------------
+        # Get metadata part
+        habitat = self.habitat[idx]
+        substrate = self.substrate[idx]
+        geo = self.geo[idx]
+        eventDate = self.eventDate[idx]
 
+        return image, habitat, substrate, geo, eventDate, label, file_path
+
+class EmbeddingNet(nn.Module):
+    def __init__(self, in_features, out_features, dropout_rate=0.1):
+        super(EmbeddingNet, self).__init__()
+
+        self.module = nn.Sequential(
+            nn.Dropout(dropout_rate),
+            nn.Linear(in_features, out_features),
+            nn.GELU(),
+        )
+
+    def forward(self, x):
+        return self.module(x)
+
+class BallsNetMetadata(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # Base efficientnet
+        self.efficient_net = models.efficientnet_b0(pretrained=True)
+
+        out_embds = [32, 128, 128, 8]
+
+        # Metadata processing heads
+        self.temporal_embedding = EmbeddingNet(7, out_embds[0])
+        self.habitat_embedding =  EmbeddingNet(29, out_embds[1])
+        self.substrate_embedding = EmbeddingNet(20, out_embds[2])
+        self.geo_embedding = EmbeddingNet(2, out_embds[3])
+
+        self.classification_head = nn.Sequential(
+            nn.Dropout(0.2),
+            nn.Linear(self.efficient_net.classifier[1].in_features + sum(out_embds), 183)  # Number of classes
+        )
+        # Remove the original classifier head
+        self.efficient_net.classifier = nn.Identity()
+
+    def forward(self, image, habitat, substrate, geo, eventDate):
+        image = self.efficient_net(image)
+
+        temp = self.temporal_embedding(eventDate)
+        hab = self.habitat_embedding(habitat)
+        subs = self.substrate_embedding(substrate)
+        geo = self.geo_embedding(geo)
+        x = torch.cat([image, temp, hab, subs, geo], dim=1)
+        return self.classification_head(x)
+
+BATCH_SIZE = 128
 def train_fungi_network(data_file, image_path, checkpoint_dir):
     """
     Train the network and save the best models based on validation accuracy and loss.
@@ -121,24 +244,20 @@ def train_fungi_network(data_file, image_path, checkpoint_dir):
     # Load metadata
     df = pd.read_csv(data_file)
     train_df = df[df['filename_index'].str.startswith('fungi_train')]
-    train_df, val_df = train_test_split(train_df, test_size=0.2, random_state=42)
+    train_df, val_df = train_test_split(train_df, test_size=0.2, random_state=42, stratify=train_df['taxonID_index'], shuffle=True)
     print('Training size', len(train_df))
     print('Validation size', len(val_df))
 
     # Initialize DataLoaders
     train_dataset = FungiDataset(train_df, image_path, transform=get_transforms(data='train'))
     valid_dataset = FungiDataset(val_df, image_path, transform=get_transforms(data='valid'))
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=4)
-    valid_loader = DataLoader(valid_dataset, batch_size=32, shuffle=False, num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
+    valid_loader = DataLoader(valid_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
 
     # Network Setup
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = models.efficientnet_b0(pretrained=True)
-    model.classifier = nn.Sequential(
-        nn.Dropout(0.2),
-        nn.Linear(model.classifier[1].in_features, len(train_df['taxonID_index'].unique()))
-    )
-    model.to(device)
+    model = BallsNetMetadata()
+    model = model.to(device)
 
     # Define Optimization, Scheduler, and Criterion
     optimizer = Adam(model.parameters(), lr=0.001)
@@ -162,19 +281,19 @@ def train_fungi_network(data_file, image_path, checkpoint_dir):
         epoch_start_time = time.time()
         
         # Training Loop
-        for images, labels, _ in train_loader:
-            images, labels = images.to(device), labels.to(device)
+        for image, habitat, substrate, geo, eventDate, label, _ in tqdm(train_loader):
+            image, habitat, substrate, geo, eventDate, label = image.to(device), habitat.to(device), substrate.to(device), geo.to(device), eventDate.to(device), label.to(device)
             optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
+            outputs = model(image, habitat, substrate, geo, eventDate)
+            loss = criterion(outputs, label)
             loss.backward()
             optimizer.step()
             
             train_loss += loss.item()
             
             # Calculate train accuracy
-            total_correct_train += (outputs.argmax(1) == labels).sum().item()
-            total_train_samples += labels.size(0)
+            total_correct_train += (outputs.argmax(1) == label).sum().item()
+            total_train_samples += label.size(0)
         
         # Calculate overall train accuracy and average loss
         train_accuracy = total_correct_train / total_train_samples
@@ -187,14 +306,14 @@ def train_fungi_network(data_file, image_path, checkpoint_dir):
         
         # Validation Loop
         with torch.no_grad():
-            for images, labels, _ in valid_loader:
-                images, labels = images.to(device), labels.to(device)
-                outputs = model(images)
-                val_loss += criterion(outputs, labels).item()
+            for image, habitat, substrate, geo, eventDate, label, _ in tqdm(valid_loader):
+                image, habitat, substrate, geo, eventDate, label = image.to(device), habitat.to(device), substrate.to(device), geo.to(device), eventDate.to(device), label.to(device)
+                outputs = model(image, habitat, substrate, geo, eventDate)
+                val_loss += criterion(outputs, label).item()
                 
                 # Calculate validation accuracy
-                total_correct_val += (outputs.argmax(1) == labels).sum().item()
-                total_val_samples += labels.size(0)
+                total_correct_val += (outputs.argmax(1) == label).sum().item()
+                total_val_samples += label.size(0)
 
         # Calculate overall validation accuracy and average loss
         val_accuracy = total_correct_val / total_val_samples
@@ -246,14 +365,10 @@ def evaluate_network_on_test_set(data_file, image_path, checkpoint_dir, session_
     df = pd.read_csv(data_file)
     test_df = df[df['filename_index'].str.startswith('fungi_test')]
     test_dataset = FungiDataset(test_df, image_path, transform=get_transforms(data='valid'))
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=4)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = models.efficientnet_b0(pretrained=True)
-    model.classifier = nn.Sequential(
-        nn.Dropout(0.2),
-        nn.Linear(model.classifier[1].in_features, 183)  # Number of classes
-    )
+    model = BallsNetMetadata()
     model.load_state_dict(torch.load(best_trained_model))
     model.to(device)
 
@@ -261,10 +376,10 @@ def evaluate_network_on_test_set(data_file, image_path, checkpoint_dir, session_
     results = []
     model.eval()
     with torch.no_grad():
-        for images, labels, filenames in tqdm.tqdm(test_loader, desc="Evaluating"):
-            images = images.to(device)
-            outputs = model(images).argmax(1).cpu().numpy()
-            results.extend(zip(filenames, outputs))  # Store filenames and predictions only
+        for image, habitat, substrate, geo, eventDate, _, filename in tqdm(test_loader, desc="Evaluating"):
+            image, habitat, substrate, geo, eventDate = image.to(device), habitat.to(device), substrate.to(device), geo.to(device), eventDate.to(device)
+            outputs = model(image, habitat, substrate, geo, eventDate).argmax(1).cpu().numpy()
+            results.extend(zip(filename, outputs))  # Store filenames and predictions only
 
     # Save Results to CSV
     with open(output_csv_path, mode="w", newline="") as csv_file:
@@ -275,16 +390,16 @@ def evaluate_network_on_test_set(data_file, image_path, checkpoint_dir, session_
 
 if __name__ == "__main__":
     # Path to fungi images
-    image_path = '/novo/projects/shared_projects/eye_imaging/data/FungiImages/'
+    image_path = 'data/FungiImages/'
     # Path to metadata file
-    data_file = str('/novo/projects/shared_projects/eye_imaging/data/FungiImages/metadata.csv')
+    data_file = str('data/metadata.csv')
 
     # Session name: Change session name for every experiment! 
     # Session name will be saved as the first line of the prediction file
     session = "EfficientNet"
 
     # Folder for results of this experiment based on session name:
-    checkpoint_dir = os.path.join(f"/novo/projects/shared_projects/eye_imaging/code/FungiChallenge/results/{session}/")
+    checkpoint_dir = os.path.join(f"results/{session}/")
 
     train_fungi_network(data_file, image_path, checkpoint_dir)
     evaluate_network_on_test_set(data_file, image_path, checkpoint_dir, session)
