@@ -275,16 +275,16 @@ def evaluate_network_on_test_set(data_file, image_path, checkpoint_dir, session_
 
 if __name__ == "__main__":
     # Path to fungi images
-    image_path = '/novo/projects/shared_projects/eye_imaging/data/FungiImages/'
+    image_path = '/home/create.aau.dk/lt61yz/PhDSchoolFungi/MultimodalDataChallenge2025/data/FungiImages/'
     # Path to metadata file
-    data_file = str('/novo/projects/shared_projects/eye_imaging/data/FungiImages/metadata.csv')
+    data_file = str('/home/create.aau.dk/lt61yz/PhDSchoolFungi/MultimodalDataChallenge2025/data/metadata.csv')
 
     # Session name: Change session name for every experiment! 
     # Session name will be saved as the first line of the prediction file
-    session = "EfficientNet"
+    session = "EfficientNet_MODA"
 
     # Folder for results of this experiment based on session name:
-    checkpoint_dir = os.path.join(f"/novo/projects/shared_projects/eye_imaging/code/FungiChallenge/results/{session}/")
+    checkpoint_dir = os.path.join(f"/home/create.aau.dk/lt61yz/PhDSchoolFungi/MultimodalDataChallenge2025/checkpoints/{session}/")
 
     train_fungi_network(data_file, image_path, checkpoint_dir)
     evaluate_network_on_test_set(data_file, image_path, checkpoint_dir, session)

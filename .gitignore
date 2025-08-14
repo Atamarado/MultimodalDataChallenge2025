@@ -172,4 +172,9 @@ __MACOSX/
 # Rasmus stuff
 *_RAPADEBUG*
 
-
+# MODA stuff
+data
+logs
+checkpoints
+scripts
+slurm*
