@@ -19,6 +19,7 @@ from PIL import Image
 import time
 import csv
 from collections import Counter
+import wandb
 
 from utils import get_subset
 
@@ -265,6 +266,7 @@ def train_fungi_network(data_file, image_path, checkpoint_dir):
     optimizer = Adam(model.parameters(), lr=0.001)
     scheduler = ReduceLROnPlateau(optimizer, 'min', factor=0.9, patience=1, eps=1e-6)
     criterion = nn.CrossEntropyLoss()
+    wandb.watch(model, criterion, log="all", log_freq=50, log_graph=True)
 
     # Early stopping setup
     patience = 10
@@ -333,6 +335,15 @@ def train_fungi_network(data_file, image_path, checkpoint_dir):
         
         # Log epoch metrics to the CSV file
         log_epoch_to_csv(csv_file_path, epoch + 1, epoch_time, avg_train_loss, train_accuracy, avg_val_loss, val_accuracy)
+        wandb.log({
+            "epoch": epoch + 1,
+            "train/loss": avg_train_loss,
+            "train/acc":  train_accuracy,
+            "val/loss":   avg_val_loss,
+            "val/acc":    val_accuracy,
+            "lr": optimizer.param_groups[0]["lr"],
+            "epoch_time_sec": epoch_time,
+        })
 
         # Save Models Based on Accuracy and Loss
         if val_accuracy > best_accuracy:
@@ -455,8 +466,25 @@ if __name__ == "__main__":
     # Session name will be saved as the first line of the prediction file
     session = "BallsNet_filled_gaps"
 
+    wandb.init(
+        project="fungi-metadata",           # ← change project name if you want
+        name=session,
+        config={
+            "batch_size": BATCH_SIZE,
+            "optimizer": "Adam",
+            "lr": 0.001,
+            "epochs": 100,
+            "image_size": 224,
+            "model": "BallsNetMetadata",
+            "classes": 183,
+            "augmentations": ["RandomResizedCrop","HFlip","VFlip","RandBrightContrast"],
+        },
+    )
+
     # Folder for results of this experiment based on session name:
     checkpoint_dir = os.path.join(f"results/{session}/")
 
     train_fungi_network(data_file, image_path, checkpoint_dir)
     evaluate_network_on_test_set(data_file, image_path, checkpoint_dir, session)
+
+    wandb.finish()
