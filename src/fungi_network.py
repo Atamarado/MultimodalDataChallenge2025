@@ -81,10 +81,16 @@ def get_transforms(data):
 
 OUT_DIR = 'processed_metadata'
 
-def preprocess_metadata():
+def preprocess_metadata(df):
     os.makedirs(OUT_DIR, exist_ok=True)
 
-    df = pd.read_csv('data/metadata.csv')
+    filled_the_gaps_path = os.path.join(OUT_DIR, 'filled_gaps.csv')
+    if os.path.exists(filled_the_gaps_path):
+        df = pd.read_csv(filled_the_gaps_path)
+    else:
+        df = fill_the_gaps(df)
+        df.to_csv(filled_the_gaps_path, index=False)
+
     train_df = get_subset(df, 'train')
 
     one_hot_columns = ['Habitat', 'Substrate']
@@ -114,7 +120,6 @@ def preprocess_metadata():
 
     geo_data = torch.stack(geo_data, dim=1)
     torch.save(geo_data, os.path.join(OUT_DIR, 'geo.pt'))
-
     event_date = pd.to_datetime(df['eventDate'])
 
     month_sin = torch.tensor(np.sin(2 * np.pi * event_date.dt.month / 12).fillna(0.)).float()
@@ -138,7 +143,7 @@ def load_metadata():
     data = []
     for col in cols:
         if not os.path.exists(os.path.join(OUT_DIR, f'{col}.pt')):
-            preprocess_metadata()
+            raise Exception("Metadata not preprocessed!")
         data.append(torch.load(os.path.join(OUT_DIR, f'{col}.pt')))
 
     return data
@@ -244,8 +249,9 @@ def train_fungi_network(data_file, image_path, checkpoint_dir):
 
     # Load metadata
     df = pd.read_csv(data_file)
+    preprocess_metadata(df)
+
     train_df = df[df['filename_index'].str.startswith('fungi_train')]
-    train_df = fill_the_gaps(train_df)
 
     train_df, val_df = train_test_split(train_df, test_size=0.2, random_state=42, stratify=train_df['taxonID_index'], shuffle=True)
     print('Training size', len(train_df))
@@ -444,14 +450,14 @@ def fill_the_gaps(df):
                 val = np.random.choice(valid_vals)
                 # small shift in hours
                 shift = int(np.random.uniform(-10, 10))
-                if int(val.split('-')[-1]) + shift > 30:
-                    day=30
+                if int(val.split('-')[-1]) + shift > 28:
+                    day=28 # TODO: Hotfix for the day of the month, ideally we should be able to generate every day
                 elif int(val.split('-')[-1]) + shift<1:
                     day=1
                 else:
                     day = int(val.split('-')[-1]) + shift
                 parts = str(val).split('-')          # split by dash
-                parts[-1] = str(day)                      # replace last element
+                parts[-1] = "{:02}".format(day)                      # replace last element
                 df_filled.at[mi, 'eventDate'] = '-'.join(parts)  # join back and assign
 
     return df_filled
