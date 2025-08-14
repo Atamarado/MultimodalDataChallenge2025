@@ -244,6 +244,8 @@ def train_fungi_network(data_file, image_path, checkpoint_dir):
     # Load metadata
     df = pd.read_csv(data_file)
     train_df = df[df['filename_index'].str.startswith('fungi_train')]
+    train_df = fill_the_gaps(train_df)
+
     train_df, val_df = train_test_split(train_df, test_size=0.2, random_state=42, stratify=train_df['taxonID_index'], shuffle=True)
     print('Training size', len(train_df))
     print('Validation size', len(val_df))
@@ -388,6 +390,61 @@ def evaluate_network_on_test_set(data_file, image_path, checkpoint_dir, session_
         writer.writerows(results)  # Write filenames and predictions
     print(f"Results saved to {output_csv_path}")
 
+def fill_the_gaps(df):
+    """
+    Fill missing values in a dataframe:
+    - cat_cols: filled randomly based on distribution within the same class
+    - num_cols: pick another value of the same class and shift slightly
+    - datetime_col: pick another datetime of same class and shift slightly
+    """
+    df_filled = df.copy()
+
+    for cls, group in df.groupby('taxonID_index'):
+        idxs = group.index
+
+        # Fill categorical columns
+        for col in ['Habitat', 'Substrate']:
+            missing_idx = group[group[col].isna()].index
+            if len(missing_idx) == 0:
+                continue
+            # Compute value counts and probabilities
+            counts = group[col].value_counts(normalize=True)
+            values = counts.index.values
+            probs = counts.values
+            # Sample according to distribution
+            df_filled.loc[missing_idx, col] = np.random.choice(values, size=len(missing_idx), p=probs)
+
+        # Fill coordinates together
+        missing_coords_idx = group[group['Latitude'].isna() | group['Longitude'].isna()].index
+        valid_coords = group.dropna(subset=['Latitude', 'Longitude'])[['Latitude', 'Longitude']].values
+        if len(valid_coords) > 0 and len(missing_coords_idx) > 0:
+            for mi in missing_coords_idx:
+                coord = valid_coords[np.random.randint(len(valid_coords))]
+                shift = np.random.uniform(-0.01, 0.01, size=2)
+                df_filled.loc[mi, ['Latitude', 'Longitude']] = coord + shift
+
+        # Fill datetime column
+        if 'eventDate' in df.columns:
+            missing_idx = group[group['eventDate'].isna()].index
+            valid_vals = group['eventDate'].dropna().values
+            if len(valid_vals) == 0:
+                continue
+            for mi in missing_idx:
+                val = np.random.choice(valid_vals)
+                # small shift in hours
+                shift = int(np.random.uniform(-10, 10))
+                if int(val.split('-')[-1]) + shift > 30:
+                    day=30
+                elif int(val.split('-')[-1]) + shift<1:
+                    day=1
+                else:
+                    day = int(val.split('-')[-1]) + shift
+                parts = str(val).split('-')          # split by dash
+                parts[-1] = str(day)                      # replace last element
+                df_filled.at[mi, 'eventDate'] = '-'.join(parts)  # join back and assign
+
+    return df_filled
+
 if __name__ == "__main__":
     # Path to fungi images
     image_path = 'data/FungiImages/'
@@ -396,7 +453,7 @@ if __name__ == "__main__":
 
     # Session name: Change session name for every experiment! 
     # Session name will be saved as the first line of the prediction file
-    session = "Experiment0"
+    session = "BallsNet_filled_gaps"
 
     # Folder for results of this experiment based on session name:
     checkpoint_dir = os.path.join(f"results/{session}/")
