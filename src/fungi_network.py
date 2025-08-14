@@ -208,7 +208,7 @@ class BallsNetMetadata(nn.Module):
         # Metadata processing heads
         self.temporal_embedding = EmbeddingNet(7, out_embds[0])
         self.habitat_embedding =  EmbeddingNet(29, out_embds[1])
-        self.substrate_embedding = EmbeddingNet(20, out_embds[2])
+        self.substrate_embedding = EmbeddingNet(22, out_embds[2])
         self.geo_embedding = EmbeddingNet(2, out_embds[3])
 
         self.classification_head = nn.Sequential(
@@ -228,7 +228,7 @@ class BallsNetMetadata(nn.Module):
         x = torch.cat([image, temp, hab, subs, geo], dim=1)
         return self.classification_head(x)
 
-BATCH_SIZE = 128
+BATCH_SIZE = 64
 def train_fungi_network(data_file, image_path, checkpoint_dir):
     """
     Train the network and save the best models based on validation accuracy and loss.
